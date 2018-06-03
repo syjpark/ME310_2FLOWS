@@ -1,0 +1,175 @@
+// Xylem_DiversionCode_180517c
+
+/* Team Xylem: Functional prototype
+
+   Sensors
+   1) PIR motion sensor: https://www.adafruit.com/product/189
+   2) Liquid level sensor: https://www.adafruit.com/product/3397
+   3) Turbidity sensor: https://www.dfrobot.com/product-1394.html?gclid=Cj0KCQjw5LbWBRDCARIsALAbcOcPwn5gSUe3Ef1nMjr6nmNFE3zno4ROow4Rb7DEm_30jc5myKfXRrQaAqvfEALw_wcB
+   4) pH sensor: https://www.dfrobot.com/product-1025.html
+
+   Equipment
+   1) Solenoid valve : https://www.adafruit.com/product/996
+
+   References
+   1) https://learn.adafruit.com/pir-passive-infrared-proximity-motion-sensor/using-a-pir-w-arduino
+   2) https://forums.adafruit.com/viewtopic.php?f=19&t=105040
+   3) https://www.bc-robotics.com/tutorials/controlling-a-solenoid-valve-with-arduino/
+   5) https://www.dfrobot.com/product-1025.html
+   6) https://forum.arduino.cc/index.php?topic=398900.0
+
+   Support (technical + mental)
+   1) George Toye
+
+*/
+
+// Variables defined
+#define ledPin 13                 // choose the pin for the LED
+
+#define pirPin 7                  // input pin for PIR sensor (DIGITAL)
+#define levPin 3                  // input pin for level sensor (DIGITAL)
+#define solenoidPin 8             // output pin for solenoid (DIGITAL)
+#define turbPin A1               // input pin for turbidity sensor (ANALOG)
+#define phPin A3                     // input pin for pH sensor (ANALOG)
+
+#define levelLimit 40             // 40 mm of ruler level sensor (arbitrary, made by SYJP)
+
+// For serial communication
+const byte Welcome = 1;
+const byte Welcome2 = 2;
+const byte ThankYou = 127;
+const byte Greywater = 50;
+const byte Blackwater = 80;
+const byte ScreenSaver = 120;
+
+// For PIR
+unsigned long oldTime;
+unsigned long totalTime; // total time of run
+unsigned long duration; // duration of time run
+const float endDurationThreshold = 5000;
+float endDuration;
+float lastEndTime;
+boolean endedMotion = false;
+
+boolean userInput = false; // Whether or not user wants to recylce greywater (default: false, not recycle)
+
+int pirVal_prev = LOW;             // at start, assuming no motion detected
+int pirVal = LOW;                  // variable for reading the pin status
+
+int levVal_prev = LOW;             // at start, assuming no level detected
+int levVal = LOW;                  // variable for reading the pin status
+
+int welcome_remain = 0;
+
+int turbVal;
+float detectedTurbVoltage;
+int turbThreshold = 2; // (arbitrary, made by SYJP)
+
+bool motionStarted = false;
+
+unsigned long int pHavgValue;  //Store the average value of the sensor feedback
+float detectedpH;  //Store the average value of the sensor feedback for detection of greywater
+float pHb;
+int pHbuf[10], pHtemp;
+double lowpH = 6.0;
+double highpH = 9.0;
+
+void setup() {
+  //pinMode(ledPin, OUTPUT);       // declare LED as output
+  pinMode(pirPin, INPUT);        // declare sensor as input
+  pinMode(levPin, INPUT);        // declare sensor as input
+  pinMode(phPin, INPUT);       // declare pH sensor as input
+
+  pinMode(solenoidPin, OUTPUT);   // declare solenoid as output
+
+  Serial.begin(9600);
+}
+
+float turbAnalog(int turbVal) {
+  detectedTurbVoltage = turbVal;
+  float v = turbVal * (5.0 / 1024.0); // Convert the analog reading (which goes from 0 - 1023) to a voltage (0 - 5V)
+  detectedTurbVoltage = v;
+  return detectedTurbVoltage;
+}
+
+
+// For pH sensor
+float pHAnalog() {
+  for (int i = 0; i < 10; i++) {     //Get 10 sample value from the sensor for smooth the value
+    pHbuf[i] = analogRead(phPin);
+    delay(10);
+  }
+  for (int i = 0; i < 9; i++) {      //sort the analog from small to large
+    for (int j = i + 1; j < 10; j++) {
+      if (pHbuf[i] > pHbuf[j]) {
+        pHtemp = pHbuf[i];
+        pHbuf[i] = pHbuf[j];
+        pHbuf[j] = pHtemp;
+      }
+    }
+  }
+  pHavgValue = 0;
+  for (int i = 2; i < 8; i++) {                    //take the average value of 6 center sample
+    pHavgValue += pHbuf[i];
+  }
+  float phValue = (float) pHavgValue * 5.0 / 1024 / 6; //convert the analog into millivolt
+  phValue = 3.5 * phValue;                      //convert the millivolt into pH value
+  detectedpH = phValue;
+  return detectedpH;
+}
+
+
+void loop() {
+  
+  pirVal = digitalRead(pirPin); // read input PIR value
+  levVal = digitalRead(levPin); // read input level value
+  turbVal = analogRead(turbPin); // read input turbidity value
+  detectedTurbVoltage = turbAnalog(turbVal);
+  detectedpH = pHAnalog();
+
+  //HIGH is when water is detected
+  if(levVal == LOW){
+    //If within the acceptale range of pH and turbidity, then it's greywater
+    if (detectedpH >= lowpH && detectedpH <= highpH && detectedTurbVoltage > turbThreshold) {
+        Serial.write(Greywater);
+        //Serial.println("Greywater");
+        digitalWrite(solenoidPin, HIGH); //Switch Solenoid OPEN
+      } else {
+        Serial.write(Blackwater);
+        //Serial.println("Blackwater");
+        digitalWrite(solenoidPin, LOW); //Switch Solenoid CLOSED
+      }
+      levVal_prev = HIGH;
+  }
+  //If there's no water detected
+  else {
+    //Previous state there was water, but now there isn't
+    if(levVal_prev == HIGH){
+       //Serial.println("ThankYou");
+       Serial.write(ThankYou);
+    }
+    else{
+        if (welcome_remain > 0){
+            Serial.write(Welcome2);
+            welcome_remain -= 1;
+        }
+        else if(pirVal == HIGH && pirVal_prev == LOW){
+            //Serial.println("Welcome");
+            Serial.write(Welcome);
+            welcome_remain = 5;
+        }
+        else{
+            //Serial.println("Screensaver");
+            Serial.write(ScreenSaver);
+        }
+    }
+    levVal_prev = LOW;
+  }
+  
+  //Serial.print("pirVal is now ");
+  //Serial.println(pirVal);
+  pirVal_prev = pirVal;
+
+  delay(2000); // 1 second delay
+  
+}
